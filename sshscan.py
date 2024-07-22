@@ -11,11 +11,11 @@ from optparse import OptionParser, OptionGroup
 
 
 def banner():
-    banner = """
+    banner = r"""
       _____ _____ _    _ _____
      /  ___/  ___| | | /  ___|
      \ `--.\ `--.| |_| \ `--.  ___ __ _ _ __
-      `--. \`--. |  _  |`--. \/ __/ _` | '_ \\
+      `--. \`--. |  _  |`--. \/ __/ _` | '_ \
      /\__/ /\__/ | | | /\__/ | (_| (_| | | | |
      \____/\____/\_| |_\____/ \___\__,_|_| |_|
                                             evict
@@ -48,7 +48,7 @@ def return_diff_list(detected, strong):
     
     return results
 
-def parse_results(version, kex, salg, enc, mac, cmpv):
+def parse_results(version, kex, salg, enc, mac, cmpv, options):
 
     version = version.decode("utf-8").rstrip()
     kex = kex.decode("utf-8").split(",")
@@ -67,17 +67,18 @@ def parse_results(version, kex, salg, enc, mac, cmpv):
 
     compression = True if "zlib@openssh.com" in cmpv else False
 
-    print("    [+] Detected the following ciphers: ")
-    print_columns(enc)
-    print("    [+] Detected the following KEX algorithms: ")
-    print_columns(kex)
-    print("    [+] Detected the following MACs: ")
-    print_columns(mac)
-    print("    [+] Detected the following HostKey algorithms: ")
-    print_columns(salg)
+    if not options.weak:
+        print("    [+] Detected the following ciphers: ")
+        print_columns(enc)
+        print("    [+] Detected the following KEX algorithms: ")
+        print_columns(kex)
+        print("    [+] Detected the following MACs: ")
+        print_columns(mac)
+        print("    [+] Detected the following HostKey algorithms: ")
+        print_columns(salg)
 
-    print("    [+] Target SSH version is: %s" % version)
-    print("    [+] Retrieving ciphers...")
+        print("    [+] Target SSH version is: %s" % version)
+        print("    [+] Retrieving ciphers...")
 
     if weak_ciphers:
         print("    [+] Detected the following weak ciphers: ")
@@ -126,7 +127,7 @@ def unpack_ssh_name_list(kex, n):
     return payload, n
 
 
-def unpack_msg_kex_init(kex):
+def unpack_msg_kex_init(kex, options):
 
     # the MSG for KEXINIT looks as follows
     #      byte         SSH_MSG_KEXINIT
@@ -145,7 +146,8 @@ def unpack_msg_kex_init(kex):
     #      uint32       0 (reserved for future extension)
 
     packet_size = struct.unpack("!I", kex[0:4])[0]
-    print(f"[*] KEX size: {packet_size}")
+    if not options.weak:
+        print(f"[*] KEX size: {packet_size}")
     message = kex[5]  # 20 == SSH_MSG_KEXINIT
 
     if message != 20:
@@ -153,7 +155,8 @@ def unpack_msg_kex_init(kex):
 
     cookie = struct.unpack("!16p", kex[6:22])[0]
 
-    print(f"[*] server cookie: {hexlify(cookie).decode('utf-8')}")
+    if not options.weak:
+        print(f"[*] server cookie: {hexlify(cookie).decode('utf-8')}")
 
     kex_size = struct.unpack("!I", kex[22:26])[0]
     kex_size += 1
@@ -287,6 +290,14 @@ def main():
         help="File with targets: 'target' or 'target:port' seperated by a newline (port 22 is default)",
         dest="targetlist",
     )
+    
+    parameters.add_option(
+        "-w",
+        "--weak",
+        action="store_true",
+        help="Only show weak ciphers",
+        dest="weak",
+    )
     parser.add_option_group(parameters)
 
     options, arguments = parser.parse_args()
@@ -333,9 +344,9 @@ def main():
                 )
 
     # parse the server KEXINIT message
-    kex, salg, enc, mac, cmpv = unpack_msg_kex_init(kex_init)
+    kex, salg, enc, mac, cmpv = unpack_msg_kex_init(kex_init, options)
 
-    parse_results(version, kex, salg, enc, mac, cmpv)
+    parse_results(version, kex, salg, enc, mac, cmpv, options)
 
 
 if __name__ == "__main__":
