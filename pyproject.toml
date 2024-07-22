@@ -1,17 +1,18 @@
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
-include = ["config.yml"]
 
 [tool.poetry]
 name = "SSHScan"
 version = "0.1.0"
 description = "A tool for scanning SSH servers"
 authors = ["evict"]
+include = ["config.yml"]
 
 [tool.poetry.dependencies]
 python = "^3.9"
 pyyaml = "^6.0.1"
+setuptools = "^71.1.0"
 
 [tool.poetry.scripts]
 sshscan = "sshscan:main"

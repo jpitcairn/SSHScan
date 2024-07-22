@@ -8,6 +8,7 @@ from typing import List, Tuple
 from secrets import token_bytes
 from binascii import hexlify
 from optparse import OptionParser, OptionGroup
+import pkg_resources
 
 
 def banner():
@@ -57,7 +58,7 @@ def parse_results(version, kex, salg, enc, mac, cmpv, options):
     mac = mac.decode("utf-8").split(",")
     cmpv = cmpv.decode("utf-8").split(",")
 
-    with open("config.yml") as fd:
+    with pkg_resources.resource_stream(__name__, f"config.yml") as fd:
         config = safe_load(fd)
 
     weak_ciphers = return_diff_list(enc, config["ciphers"])
