@@ -3,13 +3,13 @@
 import sys
 import socket
 import struct
+import json
 from yaml import safe_load
 from typing import List, Tuple
 from secrets import token_bytes
 from binascii import hexlify
 from optparse import OptionParser, OptionGroup
 import pkg_resources
-import json
 
 def banner():
     banner = r"""
@@ -23,32 +23,36 @@ def banner():
     """
     return banner
 
-def print_columns(cipherlist):
-    # adjust the amount of columns to display
+
+def print_columns(item_list):
+    """Prints a list in columns."""
     cols = 2
-    while len(cipherlist) % cols != 0:
-        cipherlist.append("")
+    while len(item_list) % cols != 0:
+        item_list.append("")
     else:
         split = [
-            cipherlist[i : i + int(len(cipherlist) / cols)]
-            for i in range(0, len(cipherlist), int(len(cipherlist) / cols))
+            item_list[i : i + int(len(item_list) / cols)]
+            for i in range(0, len(item_list), int(len(item_list) / cols))
         ]
         for row in zip(*split):
             print("            " + "".join(str.ljust(c, 37) for c in row))
     print("\n")
 
+
 def return_diff_list(detected, strong):
+    """Returns items in 'detected' that are not in 'strong'."""
     results = []
     for item in detected:
         if item not in strong:
             results.append(item)
     return results
 
+
 def parse_results(version, kex, salg, enc, mac, cmpv, options):
     """
-    :return: A dictionary with detected and weak algorithms, etc.
+    Parse the KEXINIT data, compare to config.yml, determine 'weak' entries.
+    Return a dict with the results.
     """
-    # Decode bytes to strings
     version = version.decode("utf-8").rstrip()
     kex = kex.decode("utf-8").split(",")
     salg = salg.decode("utf-8").split(",")
@@ -56,18 +60,18 @@ def parse_results(version, kex, salg, enc, mac, cmpv, options):
     mac = mac.decode("utf-8").split(",")
     cmpv = cmpv.decode("utf-8").split(",")
 
-    # Load config from config.yml
+    # Load the "strong" config from config.yml in the same package
     with pkg_resources.resource_stream(__name__, "config.yml") as fd:
         config = safe_load(fd)
 
-    # Figure out which items are 'weak'
+    # Determine what is "weak"
     weak_ciphers = return_diff_list(enc, config["ciphers"])
     weak_macs = return_diff_list(mac, config["macs"])
     weak_kex = return_diff_list(kex, config["kex"])
     weak_hka = return_diff_list(salg, config["hka"])
 
     # Check if compression is enabled
-    compression = "zlib@openssh.com" in cmpv
+    compression_enabled = "zlib@openssh.com" in cmpv
 
     # Build a dictionary of results
     result_data = {
@@ -77,7 +81,7 @@ def parse_results(version, kex, salg, enc, mac, cmpv, options):
             "kex": kex,
             "macs": mac,
             "hostkey_algos": salg,
-            "compression_enabled": compression,
+            "compression_enabled": compression_enabled,
         },
         "weak": {
             "ciphers": weak_ciphers,
@@ -87,9 +91,7 @@ def parse_results(version, kex, salg, enc, mac, cmpv, options):
         },
     }
 
-    # Print the results unless user only wants weak or JSON
-    # If you want to silence prints when --json is used, you can add logic for that:
-    # e.g., if not (options.jsonfile):
+    # Print to console, unless the user wants minimal output
     if not options.weak:
         print("    [+] Detected the following ciphers: ")
         print_columns(enc)
@@ -102,72 +104,56 @@ def parse_results(version, kex, salg, enc, mac, cmpv, options):
         print("    [+] Target SSH version is: %s" % version)
         print("    [+] Retrieving ciphers...")
 
-    # Weak ciphers
+    # Print any detected weaknesses
     if weak_ciphers:
         print("    [+] Detected the following weak ciphers: ")
         print_columns(weak_ciphers)
     else:
         print("    [+] No weak ciphers detected!")
 
-    # Weak KEX
     if weak_kex:
         print("    [+] Detected the following weak KEX algorithms: ")
         print_columns(weak_kex)
     else:
         print("    [+] No weak KEX detected!")
 
-    # Weak MACs
     if weak_macs:
         print("    [+] Detected the following weak MACs: ")
         print_columns(weak_macs)
     else:
         print("    [+] No weak MACs detected!")
 
-    # Weak hostkey algos
     if weak_hka:
         print("    [+] Detected the following weak HostKey algorithms: ")
         print_columns(weak_hka)
     else:
         print("    [+] No weak HostKey algorithms detected!")
 
-    if compression:
+    if compression_enabled:
         print("    [+] Compression has been enabled!")
 
     return result_data
 
+
 def unpack_ssh_name_list(kex, n):
     """
-    Unpack the name-list from the packet.
-    The comma separated list is preceded by an unsigned
-    integer which specifies the size of the list.
+    Unpack the name-list from the packet. The comma-separated list is preceded
+    by an unsigned integer specifying size of that list.
     """
     size = struct.unpack("!I", kex[n : n + 4])[0] + 1
     # jump to the name-list
     n += 3
     payload = struct.unpack(f"!{size}p", kex[n : n + size])[0]
-    # to the next integer
+    # next integer
     n += size
     return payload, n
 
+
 def unpack_msg_kex_init(kex, options):
     """
-    Parse the SSH_MSG_KEXINIT packet to retrieve KEX, host key algos, encryption algos, MAC, compression
+    Parse the SSH_MSG_KEXINIT packet to retrieve KEX, host key algos,
+    encryption algos, MAC, compression, etc.
     """
-    # the MSG for KEXINIT looks as follows
-    #      byte         SSH_MSG_KEXINIT
-    #      byte[16]     cookie (random bytes)
-    #      name-list    kex_algorithms
-    #      name-list    server_host_key_algorithms
-    #      name-list    encryption_algorithms_client_to_server
-    #      name-list    encryption_algorithms_server_to_client
-    #      name-list    mac_algorithms_client_to_server
-    #      name-list    mac_algorithms_server_to_client
-    #      name-list    compression_algorithms_client_to_server
-    #      name-list    compression_algorithms_server_to_client
-    #      name-list    languages_client_to_server
-    #      name-list    languages_server_to_client
-    #      boolean      first_kex_packet_follows
-    #      uint32       0 (reserved for future extension)
     packet_size = struct.unpack("!I", kex[0:4])[0]
     if not options.weak:
         print(f"[*] KEX size: {packet_size}")
@@ -179,8 +165,7 @@ def unpack_msg_kex_init(kex, options):
     if not options.weak:
         print(f"[*] server cookie: {hexlify(cookie).decode('utf-8')}")
 
-    kex_size = struct.unpack("!I", kex[22:26])[0]
-    kex_size += 1
+    kex_size = struct.unpack("!I", kex[22:26])[0] + 1
     kex_algos = struct.unpack(f"!{kex_size}p", kex[25 : 25 + kex_size])[0]
     n = 25 + kex_size
 
@@ -195,54 +180,16 @@ def unpack_msg_kex_init(kex, options):
     return (
         kex_algos,
         server_host_key_algo,
-        enc_server_to_client,
-        mac_server_to_client,
-        cmp_server_to_client,
+        enc_server_to_client,    # ciphers
+        mac_server_to_client,    # macs
+        cmp_server_to_client,    # compression
     )
 
-def pack_msg_kexinit_for_server(kex, salg, enc, mac, cmpv):
-    """
-    Not strictly necessary in the read-only scenario,
-    but here's how you'd pack a KEXINIT if needed.
-    """
-    kex_fmt = f"!I{len(kex)}s"
-    sal_fmt = f"!I{len(salg)}s"
-    enc_fmt = f"!I{len(enc)}s"
-    mac_fmt = f"!I{len(mac)}s"
-    cmp_fmt = f"!I{len(cmpv)}s"
-
-    kex = struct.pack(kex_fmt, len(kex), kex)
-    sal = struct.pack(sal_fmt, len(salg), salg)
-    enc = struct.pack(enc_fmt, len(enc), enc)
-    mac = struct.pack(mac_fmt, len(mac), mac)
-    cmpv = struct.pack(cmp_fmt, len(cmpv), cmpv)
-
-    remain = b"\x00\x00\x00\x00"  # languages not used
-    packet = b"\x20"
-    packet += token_bytes(16)
-    packet += kex
-    packet += sal
-    packet += enc
-    packet += enc
-    packet += mac
-    packet += mac
-    packet += cmpv
-    packet += cmpv
-    packet += b"\x00"
-    packet += remain
-    packet += b"\x00" * 8
-
-    # + unsigned int + header
-    size = len(packet) + 4 + 2
-    padding_len = size % 8
-    if padding_len < 4:
-        padding_len = 4
-    return _pack_packet(packet)
 
 def retrieve_initial_kexinit(host: str, port: int) -> Tuple[bytes, bytes]:
     """
-    Connects to the SSH server, reads version, sends it back (simple handshake),
-    then reads the KEXINIT packet.
+    Connect to the SSH server, read version, send it back,
+    then read the KEXINIT packet.
     """
     s = return_socket_for_host(host, port)
     version = s.recv(2048)
@@ -251,27 +198,63 @@ def retrieve_initial_kexinit(host: str, port: int) -> Tuple[bytes, bytes]:
     s.close()
     return kex_init, version
 
+
 def return_socket_for_host(host, port):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.connect((host, port))
     return s
 
-def _pack_packet(packet):
+
+def generate_html_table(data):
     """
-    Helper for packing a generic SSH packet, not strictly needed unless you’re forging KEXINIT.
+    Given the 'all_results' from scanning, generate an HTML table
+    showing only the hosts that have ANY weak algorithms.
+    
+    We'll include columns: Host, Weak KEX, Weak Ciphers, Weak MACs.
+    Each list item will be shown on its own line (<br>).
     """
-    block_size = 8
-    padding_len = 3 + block_size - ((len(packet) + 8) % block_size) + 1
-    if padding_len < block_size:
-        padding_len = block_size
-    header = struct.pack(">IB", len(packet) + padding_len, padding_len)
-    padding = b"\x00" * padding_len
-    packet = header + packet + padding
-    return packet
+    # 1. Gather only hosts with weaknesses
+    hosts_with_weaknesses = []
+    for item in data:
+        weak_kex = item["weak"]["kex"]
+        weak_ciphers = item["weak"]["ciphers"]
+        weak_macs = item["weak"]["macs"]
+        # If any are non-empty => "weak"
+        if weak_kex or weak_ciphers or weak_macs:
+            hosts_with_weaknesses.append({
+                "host": item["host"],
+                "weak_kex": weak_kex,
+                "weak_ciphers": weak_ciphers,
+                "weak_macs": weak_macs
+            })
+
+    # 2. Build the HTML table
+    html_lines = []
+    html_lines.append("<table>")
+    html_lines.append("<tr><th>Host</th><th>Weak KEX</th><th>Weak Ciphers</th><th>Weak MAC</th></tr>")
+
+    for host_data in hosts_with_weaknesses:
+        kex_str = "<br>".join(host_data["weak_kex"])
+        ciphers_str = "<br>".join(host_data["weak_ciphers"])
+        macs_str = "<br>".join(host_data["weak_macs"])
+
+        row = (
+            f"<tr>"
+            f"<td>{host_data['host']}</td>"
+            f"<td>{kex_str}</td>"
+            f"<td>{ciphers_str}</td>"
+            f"<td>{macs_str}</td>"
+            f"</tr>"
+        )
+        html_lines.append(row)
+
+    html_lines.append("</table>")
+    return "\n".join(html_lines)
+
 
 def main():
-
     print(banner())
+
     parser = OptionParser(usage="usage %prog [options]", version="%prog 2.0")
     parameters = OptionGroup(parser, "Options")
 
@@ -293,21 +276,26 @@ def main():
         "-w",
         "--weak",
         action="store_true",
-        help="Only show weak ciphers",
+        help="Only show weak ciphers in console output",
         dest="weak",
     )
-    # New option for JSON export
     parameters.add_option(
         "--json",
         type="string",
-        help="Save results as JSON to the specified file",
+        help="Save scan results as JSON to the specified file",
         dest="jsonfile",
+    )
+    parameters.add_option(
+        "--html",
+        type="string",
+        help="Save an HTML table of hosts with weaknesses to the specified file",
+        dest="htmlfile",
     )
 
     parser.add_option_group(parameters)
     options, arguments = parser.parse_args()
 
-    # Gather all targets
+    # Gather targets
     targets = []
     if options.target:
         targets.append(options.target)
@@ -321,9 +309,9 @@ def main():
         print("[-] No target specified!")
         sys.exit(0)
 
-    all_results = []  # To store results for all targets
+    all_results = []
 
-    # Process each target
+    # Connect to each target, parse KEXINIT, store results
     for target in targets:
         if ":" not in target:
             target += ":22"
@@ -349,22 +337,25 @@ def main():
             print(f"    [-] {e}\n")
             continue
 
-        # parse_results returns a dictionary
         result_data = parse_results(version, kex, salg, enc, mac, cmpv, options)
-        # Include the host/port in the result
+        # Add host/port info
         result_data["host"] = host
         result_data["port"] = port
 
-        # Store in our results list
         all_results.append(result_data)
 
-    # After scanning all targets, optionally write JSON if user specified --json
     if options.jsonfile:
         with open(options.jsonfile, 'w') as fd:
             json.dump(all_results, fd, indent=2)
-        print(f"\n[+] Results have been written to {options.jsonfile}\n")
-    else:
-        print("[+] JSON export was not requested, scan complete.")
+        print(f"[+] JSON results written to: {options.jsonfile}")
+
+    if options.htmlfile:
+        html_table = generate_html_table(all_results)
+        with open(options.htmlfile, "w") as fd:
+            fd.write(html_table)
+        print(f"[+] HTML table of weaknesses written to: {options.htmlfile}")
+
+    print("\n[+] Scanning complete.")
 
 if __name__ == "__main__":
     main()
